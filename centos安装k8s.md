@@ -1,5 +1,6 @@
 # centos安装kubernetes
 
+## 单节点
 ### 关闭防火墙
 
 ```shell
