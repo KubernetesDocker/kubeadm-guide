@@ -1,6 +1,5 @@
 # centos安装kubernetes
 
-## 单节点
 ### 关闭防火墙
 
 ```shell
@@ -103,17 +102,25 @@ EOF
 
 ```shell
 sudo yum install -y flannel kubelet kubeadm kubectl
-systemctl enable kubelet && systemctl start kubelet
+
 ```
 
 ### 初始化kubernetes
 
 ```shell
-sudo kubeadm init --apiserver-advertise-address 0.0.0.0 --pod-network-cidr 10.10.0.0/16
+sudo kubeadm init --apiserver-advertise-address 0.0.0.0 --pod-network-cidr 10.244.0.0/16  --kubernetes-version v1.20.4 
 ### 安装结束后，会给你一些提示命令，直接按照结果中给出的复制粘贴执行就行，大致是如下命令：
 # mkdir -p $HOME/.kube
 # sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
 # sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+### 新加入一个节点
+
+在主节点上运行命令`kubeadm token list`获取token，然后在从机上运行如下命令：
+
+```shell
+kubeadm join --token <token> <主服务器ip或域名>:6443
 ```
 
 ### 安装flannel
@@ -125,3 +132,70 @@ kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documen
 ### 错误异常处理
 
 如果出现codedns或flannel的错误，导致kubernetes无法正常运行，则依次删除codedns和flannel对应的pod，再次查看状态，大部分情况下会恢复正常，如果未恢复正常，则运行`kubeadm reset`，然后重新使用`kubeadm init`进行安装。
+
+
+
+--------------------------------
+
+
+
+### kubernetes 在pod内无法ping通servicename和ClusterIP的问题解决
+
+需要使用 ipvs 替换iptables，操作是在所有节点上，开启内核支持：
+
+```shell
+cat >> /etc/sysctl.conf << EOF
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+ 
+sysctl -p
+```
+
+开启ipvs支持：
+
+```shell
+yum -y install ipvsadm  ipset
+ 
+# 临时生效
+modprobe -- ip_vs
+modprobe -- ip_vs_rr
+modprobe -- ip_vs_wrr
+modprobe -- ip_vs_sh
+modprobe -- nf_conntrack_ipv4
+ 
+# 永久生效
+cat > /etc/sysconfig/modules/ipvs.modules <<EOF
+modprobe -- ip_vs
+modprobe -- ip_vs_rr
+modprobe -- ip_vs_wrr
+modprobe -- ip_vs_sh
+modprobe -- nf_conntrack_ipv4
+EOF
+```
+
+配置kube-proxy，在master上操作，因使用kubeadmin安装，所以操作方式如下：
+
+```shell
+kubectl edit cm kube-proxy -n kube-system
+
+# 找到如下配置片段
+...
+    ipvs:
+      excludeCIDRs: null
+      minSyncPeriod: 0s
+      scheduler: ""
+      syncPeriod: 30s
+    kind: KubeProxyConfiguration
+    metricsBindAddress: 127.0.0.1:10249
+    mode: "ipvs"                  #修改
+...
+```
+
+在master重启kube-proxy：
+
+```shell
+kubectl  get pod -n kube-system | grep kube-proxy | awk '{print $1}' | xargs kubectl delete pod -n kube-system
+```
+
